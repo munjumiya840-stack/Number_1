@@ -254,6 +254,143 @@ serve(async (req: Request) => {
       }, 200);
     }
 
+    // Action: auto-login via Telegram initData (Mini App) or Telegram UID
+    if (action === "auto_login") {
+      const { initData } = body;
+      let tgId: string | null = null;
+
+      // Path 1: verify signed initData from the Mini App
+      if (initData) {
+        const { data: botRow } = await supabase
+          .from("config").select("value").eq("key", "bot_api_key").maybeSingle();
+
+        if (botRow?.value) {
+          const verified = await verifyInitData(String(initData), botRow.value);
+          if (verified) {
+            tgId = verified.id;
+          } else {
+            return jsonResponse({ error: "invalid_init_data", message: "Telegram verification failed. Please open the Mini App from Telegram." }, 401);
+          }
+        } else {
+          return jsonResponse({ error: "bot_not_configured", message: "Telegram bot is not configured. Please contact the admin." }, 500);
+        }
+      } else if (telegramId) {
+        // Path 2: plain Telegram UID login
+        tgId = String(telegramId).trim();
+      }
+
+      if (!tgId) {
+        return jsonResponse({ error: "missing_params", message: "Telegram initData or Telegram ID is required" }, 400);
+      }
+
+      // Find profile by telegram_id
+      let { data: userProfile } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, is_banned, is_admin, is_super_admin, telegram_id")
+        .eq("telegram_id", tgId)
+        .maybeSingle();
+
+      // Auto-create account if this Telegram ID has never logged in
+      if (!userProfile) {
+        const generatedEmail = `${tgId}@telegram.globalnumber.app`;
+        const { data: created, error: createError } = await supabase.auth.admin.createUser({
+          email: generatedEmail,
+          email_confirm: true,
+          user_metadata: { telegram_id: tgId, provider: "telegram" },
+        });
+
+        if (createError || !created?.user) {
+          // User may already exist in auth.users with this email (profile row missing)
+          const { data: byPage } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1 });
+          void byPage;
+          // Try to look the user up by email through generateLink instead
+          const { data: linkData } = await supabase.auth.admin.generateLink("magiclink", generatedEmail, { type: "magiclink" });
+          if (linkData?.user?.id) {
+            await supabase.from("profiles").upsert({
+              id: linkData.user.id,
+              username: `tg_${tgId}`,
+              full_name: `Telegram User ${tgId}`,
+              email: generatedEmail,
+              telegram_id: tgId,
+              balance: 0,
+              is_banned: false,
+              is_admin: false,
+            });
+            const { data: prof } = await supabase
+              .from("profiles")
+              .select("id, full_name, email, is_banned, is_admin, is_super_admin, telegram_id")
+              .eq("id", linkData.user.id)
+              .maybeSingle();
+            userProfile = prof ?? null;
+          }
+          if (!userProfile) {
+            return jsonResponse({ error: "create_failed", message: "Could not create your account. Please try again or use email login." }, 500);
+          }
+        } else {
+          await supabase.from("profiles").upsert({
+            id: created.user.id,
+            username: `tg_${tgId}`,
+            full_name: `Telegram User ${tgId}`,
+            email: generatedEmail,
+            telegram_id: tgId,
+            balance: 0,
+            is_banned: false,
+            is_admin: false,
+          });
+          userProfile = {
+            id: created.user.id,
+            full_name: `Telegram User ${tgId}`,
+            email: generatedEmail,
+            is_banned: false,
+            is_admin: false,
+            is_super_admin: false,
+            telegram_id: tgId,
+          };
+        }
+      }
+
+      if (userProfile.is_banned) {
+        return jsonResponse({ error: "banned", message: "Your account has been banned." }, 403);
+      }
+
+      // Resolve the auth email — profile email first, then auth.users lookup
+      let authEmail = userProfile.email;
+      if (!authEmail || !authEmail.includes("@")) {
+        const { data: authUser } = await supabase.auth.admin.getUserById(userProfile.id);
+        if (authUser?.user?.email) {
+          authEmail = authUser.user.email;
+        }
+      }
+
+      if (!authEmail || !authEmail.includes("@")) {
+        return jsonResponse({ error: "invalid_email", message: "Your account has no valid email. Please contact support." }, 400);
+      }
+
+      // Create the long-lived session
+      const session = await createLongLivedSession(supabase, authEmail);
+      if (!session) {
+        return jsonResponse({ error: "auth_failed", message: "Failed to create login session. Please try again." }, 500);
+      }
+
+      // Record the session for audit
+      await supabase.from("telegram_sessions").insert({
+        user_id: userProfile.id,
+        telegram_id: tgId,
+      });
+
+      return jsonResponse({
+        success: true,
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        email: authEmail,
+        userId: userProfile.id,
+        isAdmin: userProfile.is_admin,
+        isSuperAdmin: userProfile.is_super_admin,
+        session_type: "persistent",
+        auto_created: false,
+      }, 200);
+    }
+
     return jsonResponse({ error: "invalid_action", message: "Action must be 'send' or 'verify'" }, 400);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -261,3 +398,50 @@ serve(async (req: Request) => {
     return jsonResponse({ error: "server_error", message }, 500);
   }
 });
+
+// Verify Telegram initData signature using the bot token (HMAC-SHA256)
+async function verifyInitData(initData: string, botToken: string): Promise<{ id: string } | null> {
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get("hash");
+    if (!hash) return null;
+    params.delete("hash");
+
+    // data_check_string: sorted key=value pairs joined by newline
+    const dataCheckString = Array.from(params.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n");
+
+    const encoder = new TextEncoder();
+    const secretKey = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode("WebAppData"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const secret = await crypto.subtle.sign("HMAC", secretKey, encoder.encode(botToken));
+    const hmacKey = await crypto.subtle.importKey(
+      "raw",
+      secret,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const signature = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(dataCheckString));
+    const computedHash = Array.from(new Uint8Array(signature))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    if (computedHash !== hash) return null;
+
+    const userJson = params.get("user");
+    if (!userJson) return null;
+    const user = JSON.parse(userJson);
+    return { id: String(user.id) };
+  } catch (err) {
+    console.error("verifyInitData error:", err);
+    return null;
+  }
+}

@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { Orbitron, Inter } from 'next/font/google';
 import { Toaster } from '@/components/ui/sonner';
 import { AuthProvider } from '@/lib/auth-context';
+import { TelegramAutoLogin } from '@/components/auth/telegram-auto-login';
 
 const orbitron = Orbitron({
   subsets: ['latin'],
@@ -37,6 +38,7 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className={`${orbitron.variable} ${inter.variable} font-sans antialiased`}>
         <AuthProvider>
+          <TelegramAutoLogin />
           {children}
         </AuthProvider>
         <Toaster />

@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { ArrowLeft, Mail, Lock, Loader2, Send, KeyRound, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Mail, Lock, Loader2, Send, KeyRound, MessageCircle, Zap } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -101,6 +101,42 @@ export default function LoginPage() {
       }
     } catch {
       toast.error('Network error during verification. Check your connection and try again.');
+    }
+    setTgLoading(false);
+  };
+
+  const handleInstantTgLogin = async () => {
+    if (!telegramId.trim()) {
+      toast.error('Enter your Telegram ID first');
+      return;
+    }
+    setTgLoading(true);
+    try {
+      const resp = await fetch(`${supabaseUrl}/functions/v1/telegram-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'auto_login', telegramId: telegramId.trim() }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        const errMsg = data.message || data.error || 'Auto-login failed';
+        toast.error(errMsg);
+      } else if (data.access_token && data.refresh_token) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+        });
+        if (sessionError) {
+          toast.error('Login succeeded but session could not start. Please try again.');
+        } else {
+          toast.success('Logged in via Telegram! Welcome back.');
+          router.push(data.isAdmin ? '/admin' : '/dashboard');
+        }
+      } else {
+        toast.error('No session returned. Please use the code login instead.');
+      }
+    } catch {
+      toast.error('Network error during login. Check your connection and try again.');
     }
     setTgLoading(false);
   };
@@ -217,6 +253,20 @@ export default function LoginPage() {
                 >
                   {tgLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                   Send Code
+                </Button>
+                <div className="flex items-center gap-2">
+                  <div className="h-px flex-1 bg-border/50" />
+                  <span className="text-xs text-muted-foreground">or</span>
+                  <div className="h-px flex-1 bg-border/50" />
+                </div>
+                <Button
+                  onClick={handleInstantTgLogin}
+                  variant="outline"
+                  className="w-full"
+                  disabled={tgLoading || !telegramId.trim()}
+                >
+                  {tgLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+                  Instant Login (no code)
                 </Button>
               </>
             ) : (

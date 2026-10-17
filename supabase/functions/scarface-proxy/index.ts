@@ -189,32 +189,21 @@ serve(async (req: Request) => {
       }
       const filteredNumbers = (parsed.numbers || []).filter((n) => userNumberIds.includes(n.id));
 
-      // Credit earnings for new OTPs (INSTANT credit on first OTP receipt)
+      // Credit earnings for new OTPs (atomic, duplicate-safe via DB function)
       for (const [numberId, otps] of Object.entries(filteredData)) {
         for (const otp of otps) {
-          const { data: existing } = await supabase
-            .from("otp_charge_log")
-            .select("id")
-            .eq("otp_id", otp.id)
-            .maybeSingle();
+          const { data: credited, error: rpcError } = await supabase.rpc("credit_otp_earnings", {
+            p_user_id: userId,
+            p_otp_id: otp.id,
+            p_number_id: numberId,
+            p_amount: otpPrice,
+            p_service: otp.service,
+          });
 
-          if (!existing) {
-            // Log the earnings
-            await supabase.from("otp_charge_log").insert({
-              otp_id: otp.id, user_id: userId, number_id: numberId,
-              amount: otpPrice, service: otp.service, is_earnings: true,
-            });
-
-            // Credit the user's balance immediately
-            const { data: prof } = await supabase
-              .from("profiles").select("balance, total_earnings").eq("id", userId).maybeSingle();
-
-            if (prof) {
-              await supabase.from("profiles").update({
-                balance: (prof.balance || 0) + otpPrice,
-                total_earnings: (prof.total_earnings || 0) + otpPrice,
-              }).eq("id", userId);
-            }
+          if (rpcError) {
+            console.error("credit_otp_earnings failed:", rpcError.message);
+          } else if (credited === true) {
+            console.log(`Credited ${otpPrice} to user ${userId} for OTP ${otp.id}`);
           }
         }
       }
