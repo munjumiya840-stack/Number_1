@@ -57,13 +57,14 @@ export default function LoginPage() {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        toast.error(data.message || 'Failed to send code');
+        const errMsg = data.message || data.error || 'Failed to send code';
+        toast.error(errMsg);
       } else {
         toast.success('Code sent to your Telegram');
         setTgStep('code');
       }
     } catch {
-      toast.error('Failed to connect to Telegram service');
+      toast.error('Network error reaching Telegram service. Check your connection and try again.');
     }
     setTgLoading(false);
   };
@@ -82,14 +83,15 @@ export default function LoginPage() {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        toast.error(data.message || 'Verification failed');
+        const errMsg = data.message || data.error || 'Verification failed';
+        toast.error(errMsg);
       } else if (data.access_token && data.refresh_token) {
         const { error: sessionError } = await supabase.auth.setSession({
           access_token: data.access_token,
           refresh_token: data.refresh_token,
         });
         if (sessionError) {
-          toast.error('Verified, but failed to establish session. Please try email login.');
+          toast.error('Verified successfully, but could not start your session. Please try email login.');
         } else {
           toast.success('Login successful! Welcome back.');
           router.push(data.isAdmin ? '/admin' : '/dashboard');
@@ -98,7 +100,7 @@ export default function LoginPage() {
         toast.error('Verification succeeded but no session was returned. Please try email login.');
       }
     } catch {
-      toast.error('Failed to verify code');
+      toast.error('Network error during verification. Check your connection and try again.');
     }
     setTgLoading(false);
   };

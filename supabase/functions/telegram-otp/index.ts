@@ -39,6 +39,13 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
   }
 }
 
+function jsonResponse(body: Record<string, unknown>, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -55,34 +62,26 @@ serve(async (req: Request) => {
     // Action: send OTP code to Telegram
     if (action === "send") {
       if (!telegramId) {
-        return new Response(
-          JSON.stringify({ error: "missing_telegram_id", message: "Telegram ID is required" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "missing_telegram_id", message: "Telegram ID is required" }, 400);
       }
 
-      // Look up user by telegram_id in profiles
       const { data: profile } = await supabase
         .from("profiles")
-        .select("id, full_name, is_banned, telegram_id")
+        .select("id, full_name, email, is_banned, telegram_id")
         .eq("telegram_id", String(telegramId))
         .maybeSingle();
 
       if (!profile) {
-        return new Response(
-          JSON.stringify({ error: "user_not_found", message: "No account found with this Telegram ID. Make sure you have registered and linked your Telegram ID in your profile, and that you have sent /start to the bot." }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "user_not_found",
+          message: "No account found with this Telegram ID. Make sure you have registered and linked your Telegram ID in your profile, and that you have sent /start to the bot.",
+        }, 404);
       }
 
       if (profile.is_banned) {
-        return new Response(
-          JSON.stringify({ error: "banned", message: "Your account has been banned." }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "banned", message: "Your account has been banned." }, 403);
       }
 
-      // Get bot token from config
       const { data: configRow } = await supabase
         .from("config")
         .select("value")
@@ -90,69 +89,58 @@ serve(async (req: Request) => {
         .maybeSingle();
 
       if (!configRow?.value) {
-        return new Response(
-          JSON.stringify({ error: "bot_not_configured", message: "Telegram bot is not configured. Please contact the admin." }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "bot_not_configured",
+          message: "Telegram bot is not configured. Please contact the admin.",
+        }, 500);
       }
 
-      // Generate 6-digit code, valid for 2 minutes
       const otpCode = generateCode();
-      const expiresAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-      // Invalidate previous unused codes
       await supabase
         .from("telegram_otp_codes")
         .update({ used: true })
         .eq("telegram_id", String(telegramId))
         .eq("used", false);
 
-      // Insert new code
       const { error: insertError } = await supabase
         .from("telegram_otp_codes")
         .insert({
           telegram_id: String(telegramId),
           code: otpCode,
-          email: profile.full_name || null,
+          email: profile.email || profile.full_name || null,
           expires_at: expiresAt,
           used: false,
         });
 
       if (insertError) {
         console.error("Failed to insert OTP code:", insertError);
-        return new Response(
-          JSON.stringify({ error: "db_error", message: "Failed to store verification code" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "db_error", message: "Failed to store verification code" }, 500);
       }
 
-      // Send via Telegram bot
-      const message = `🔐 <b>GLOBAL NUMBER Login Code</b>\n\nYour verification code is: <b>${otpCode}</b>\n\n⏱ This code expires in 2 minutes.\n\nDo not share this code with anyone.`;
+      const message = `🔐 <b>GLOBAL NUMBER Login Code</b>\n\nYour verification code is: <b>${otpCode}</b>\n\n⏱ This code expires in 5 minutes.\n\nDo not share this code with anyone.`;
       const sent = await sendTelegramMessage(configRow.value, String(telegramId), message);
 
       if (!sent) {
-        return new Response(
-          JSON.stringify({ error: "telegram_send_failed", message: "Failed to send code via Telegram. Make sure you have started a chat with the bot by sending /start." }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "telegram_send_failed",
+          message: "Failed to send code via Telegram. Make sure you have started a chat with the bot by sending /start.",
+        }, 500);
       }
 
-      return new Response(
-        JSON.stringify({ success: true, message: "Verification code sent to your Telegram" }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({ success: true, message: "Verification code sent to your Telegram" }, 200);
     }
 
     // Action: verify OTP code and return session tokens
     if (action === "verify") {
       if (!telegramId || !code) {
-        return new Response(
-          JSON.stringify({ error: "missing_params", message: "Telegram ID and verification code are required" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "missing_params",
+          message: "Telegram ID and verification code are required",
+        }, 400);
       }
 
-      // Find the latest unused code for this telegram_id
       const { data: otpRecord } = await supabase
         .from("telegram_otp_codes")
         .select("*")
@@ -163,30 +151,25 @@ serve(async (req: Request) => {
         .maybeSingle();
 
       if (!otpRecord) {
-        return new Response(
-          JSON.stringify({ error: "no_code", message: "No active code found. Please request a new one." }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "no_code",
+          message: "No active code found. Please request a new one.",
+        }, 404);
       }
 
-      // Check expiry
       if (new Date(otpRecord.expires_at) < new Date()) {
         await supabase
           .from("telegram_otp_codes")
           .update({ used: true })
           .eq("id", otpRecord.id);
-        return new Response(
-          JSON.stringify({ error: "expired", message: "Code has expired. Please request a new one." }),
-          { status: 410, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({
+          error: "expired",
+          message: "Code has expired. Please request a new one.",
+        }, 410);
       }
 
-      // Check code matches
       if (otpRecord.code !== String(code)) {
-        return new Response(
-          JSON.stringify({ error: "invalid_code", message: "Incorrect code. Please try again." }),
-          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "invalid_code", message: "Incorrect code. Please try again." }, 401);
       }
 
       // Mark code as used
@@ -195,80 +178,112 @@ serve(async (req: Request) => {
         .update({ used: true })
         .eq("id", otpRecord.id);
 
-      // Get user profile
+      // Get user profile — use email column for auth, fall back to full_name
       const { data: userProfile } = await supabase
         .from("profiles")
-        .select("id, full_name, is_banned, is_admin, is_super_admin, telegram_id")
+        .select("id, full_name, email, is_banned, is_admin, is_super_admin, telegram_id")
         .eq("telegram_id", String(telegramId))
         .maybeSingle();
 
       if (!userProfile) {
-        return new Response(
-          JSON.stringify({ error: "user_not_found", message: "Account not found" }),
-          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "user_not_found", message: "Account not found" }, 404);
       }
 
       if (userProfile.is_banned) {
-        return new Response(
-          JSON.stringify({ error: "banned", message: "Your account has been banned." }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return jsonResponse({ error: "banned", message: "Your account has been banned." }, 403);
       }
 
-      // The profile.id is the Supabase Auth user id
-      // Use admin API to mint a session for this user
-      const { data: sessionData, error: sessionError } = await supabase.auth.admin.generateLink(
+      // Resolve the user's email for auth — profile.email is the authoritative source
+      const authEmail = userProfile.email || userProfile.full_name;
+
+      if (!authEmail || !authEmail.includes("@")) {
+        return jsonResponse({
+          error: "invalid_email",
+          message: "Your account does not have a valid email for session creation. Please use email login instead.",
+        }, 400);
+      }
+
+      // Generate a magic link — this creates the link and returns properties with tokens
+      const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink(
         "magiclink",
-        userProfile.full_name,
+        authEmail,
         { type: "magiclink" }
       );
 
-      if (sessionError || !sessionData) {
-        console.error("Failed to generate link:", sessionError);
-        return new Response(
-          JSON.stringify({ error: "auth_failed", message: "Failed to create login session. Please try email login." }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      if (linkError || !linkData) {
+        console.error("generateLink error:", JSON.stringify(linkError));
+        return jsonResponse({
+          error: "auth_failed",
+          message: "Failed to create login session. Please try email login.",
+        }, 500);
       }
 
-      // The properties object contains access_token and refresh_token
-      const properties = sessionData.properties;
+      // generateLink returns properties with access_token and refresh_token for magiclink type
+      const properties = linkData.properties;
       const accessToken = properties?.access_token;
       const refreshToken = properties?.refresh_token;
 
       if (!accessToken || !refreshToken) {
-        console.error("No tokens in generated link");
-        return new Response(
-          JSON.stringify({ error: "auth_failed", message: "Failed to create login session. Please try email login." }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        // Fallback: try to extract token from the action_link and exchange it
+        const actionLink = properties?.action_link || linkData?.action_link;
+        if (actionLink) {
+          try {
+            const url = new URL(actionLink);
+            const token = url.searchParams.get("token") || url.hash.split("access_token=")[1]?.split("&")[0];
+            if (token) {
+              const verifyRes = await fetch(`${supabaseUrl}/auth/v1/verify`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "apikey": supabaseServiceKey,
+                },
+                body: JSON.stringify({
+                  type: "magiclink",
+                  token,
+                }),
+              });
+              if (verifyRes.ok) {
+                const session = await verifyRes.json();
+                if (session.access_token && session.refresh_token) {
+                  return jsonResponse({
+                    success: true,
+                    access_token: session.access_token,
+                    refresh_token: session.refresh_token,
+                    email: authEmail,
+                    userId: userProfile.id,
+                    isAdmin: userProfile.is_admin,
+                    isSuperAdmin: userProfile.is_super_admin,
+                  }, 200);
+                }
+              }
+            }
+          } catch (fallbackErr) {
+            console.error("Fallback token exchange failed:", fallbackErr);
+          }
+        }
+
+        console.error("No tokens in generated link. Properties:", JSON.stringify(properties));
+        return jsonResponse({
+          error: "auth_failed",
+          message: "Failed to create login session. Please try email login.",
+        }, 500);
       }
 
-      return new Response(
-        JSON.stringify({
-          success: true,
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          email: userProfile.full_name,
-          userId: userProfile.id,
-          isAdmin: userProfile.is_admin,
-          isSuperAdmin: userProfile.is_super_admin,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return jsonResponse({
+        success: true,
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        email: authEmail,
+        userId: userProfile.id,
+        isAdmin: userProfile.is_admin,
+        isSuperAdmin: userProfile.is_super_admin,
+      }, 200);
     }
 
-    return new Response(
-      JSON.stringify({ error: "invalid_action", message: "Action must be 'send' or 'verify'" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return jsonResponse({ error: "invalid_action", message: "Action must be 'send' or 'verify'" }, 400);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("telegram-otp error:", message);
-    return new Response(
-      JSON.stringify({ error: "server_error", message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return jsonResponse({ error: "server_error", message }, 500);
   }
 });

@@ -12,7 +12,7 @@ import {
   LayoutDashboard, Phone, KeyRound, FolderClock, Wallet,
   ArrowLeftRight, User as UserIcon, LogOut, Menu, X,
   Shield, Settings, Users, Radio, Server, Tag, Gift,
-  Package, ScrollText, UserCog, Layers, Bell, CheckCircle,
+  Package, ScrollText, UserCog, Layers, Bell, CheckCircle, Radar,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -20,6 +20,7 @@ import { supabase } from '@/lib/supabase';
 const userNav = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/dashboard/get-number', label: 'Get Number', icon: Phone },
+  { href: '/dashboard/range-numbers', label: 'Range Numbers', icon: Radar },
   { href: '/dashboard/2fa', label: 'Get 2FA', icon: KeyRound },
   { href: '/dashboard/my-numbers', label: 'My Numbers', icon: FolderClock },
   { href: '/dashboard/otp-logs', label: 'OTP Logs', icon: FolderClock },

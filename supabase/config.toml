@@ -1,6 +1,9 @@
 [functions.lamix-proxy]
 verify_jwt = false
 
+[functions.scarface-proxy]
+verify_jwt = false
+
 [functions.telegram-otp]
 verify_jwt = false
 
