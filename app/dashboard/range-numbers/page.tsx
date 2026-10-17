@@ -111,6 +111,10 @@ export default function RangeNumbersPage() {
   const [pollResults, setPollResults] = useState<Record<string, OtpRecord[]>>({});
   const [prevOtpCount, setPrevOtpCount] = useState(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [otpPrice, setOtpPrice] = useState<number | null>(null);
+  const [adminRanges, setAdminRanges] = useState<Array<{
+    id: number; service_name: string; service_sid: string; range_prefix: string; description: string | null;
+  }>>([]);
 
   const fetchLiveAccess = useCallback(async () => {
     setLiveLoading(true);
@@ -137,6 +141,22 @@ export default function RangeNumbersPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
+      const { data: priceRow } = await supabase
+        .from('config')
+        .select('value')
+        .eq('key', 'scarface_otp_price')
+        .maybeSingle();
+      if (priceRow?.value) {
+        setOtpPrice(parseFloat(priceRow.value));
+      } else {
+        setOtpPrice(0.50);
+      }
+      const { data: ranges } = await supabase
+        .from('nexa_ranges')
+        .select('id, service_name, service_sid, range_prefix, description')
+        .eq('is_visible', true)
+        .order('sort_order', { ascending: true });
+      setAdminRanges(ranges || []);
       await Promise.all([fetchLiveAccess(), fetchActiveNumbers()]);
       setLoading(false);
     })();
@@ -240,7 +260,7 @@ export default function RangeNumbersPage() {
               <div>
                 <p className="text-xs text-muted-foreground">Your Balance</p>
                 <p className="mt-1 text-2xl font-bold text-primary">
-                  {profile ? `$${profile.balance.toFixed(2)}` : '—'}
+                  {profile ? `${profile.balance.toFixed(2)}` : '—'}
                 </p>
               </div>
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
@@ -253,10 +273,11 @@ export default function RangeNumbersPage() {
           <CardContent className="p-5">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Per Number Cost</p>
+                <p className="text-xs text-muted-foreground">Per OTP Cost</p>
                 <p className="mt-1 text-2xl font-bold text-accent">
-                  {profile ? `$${(profile.balance > 0 ? '0.50' : '0.50')}` : '—'}
+                  {otpPrice !== null ? `${otpPrice.toFixed(2)}` : '—'}
                 </p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Charged only when OTP received</p>
               </div>
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10">
                 <Zap className="h-5 w-5 text-accent" />
@@ -267,6 +288,49 @@ export default function RangeNumbersPage() {
       </div>
 
       <div className="space-y-6">
+        {/* Admin-Whitelisted Ranges */}
+        {adminRanges.length > 0 && (
+          <Card className="border-primary/30 bg-card/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Flame className="h-4 w-4 text-primary" />
+                Active Services
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {adminRanges.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => {
+                      const cleanPrefix = r.range_prefix.replace(/X+$/, '');
+                      setPrefix(cleanPrefix);
+                      toast.info(`${r.service_name} prefix set to ${cleanPrefix || 'auto'}`);
+                    }}
+                    className="rounded-lg border border-border/50 bg-muted/20 p-4 text-left transition-all hover:border-primary/30 hover:bg-primary/5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded bg-primary/10 text-sm font-bold text-primary">
+                        {r.service_name.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="font-medium text-sm">{r.service_name}</p>
+                        {r.service_sid && (
+                          <p className="text-[10px] text-muted-foreground font-mono">{r.service_sid}</p>
+                        )}
+                      </div>
+                    </div>
+                    <p className="mt-2 font-mono text-sm text-accent">{r.range_prefix}</p>
+                    {r.description && (
+                      <p className="mt-1 text-xs text-muted-foreground">{r.description}</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Live Access & Hot Ranges */}
         <Card className="border-border/50 bg-card/50">
           <CardHeader className="flex flex-row items-center justify-between">
@@ -536,7 +600,7 @@ export default function RangeNumbersPage() {
             <div className="text-xs text-muted-foreground space-y-1">
               <p>OTP polling runs automatically every 5 seconds across all your active numbers.</p>
               <p>Numbers are held for 20 minutes after allocation. Click any hot range to pre-fill the prefix.</p>
-              <p>Each number allocation deducts from your wallet balance.</p>
+              <p>Number allocation is free. You are charged only when an OTP is successfully received for your number.</p>
             </div>
           </div>
         </div>

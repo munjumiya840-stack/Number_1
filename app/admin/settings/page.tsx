@@ -345,7 +345,7 @@ export default function AdminSettingsPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="sfPrice" className="text-sm">Price per Number (USD)</Label>
+                  <Label htmlFor="sfPrice" className="text-sm">Price per OTP (USD)</Label>
                   <div className="relative">
                     <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
@@ -376,7 +376,7 @@ export default function AdminSettingsPage() {
                 )}
               </div>
               <p className="text-xs text-muted-foreground">
-                The price per number is automatically deducted from the user wallet balance when they allocate a number on the Range Numbers page.
+                Users are charged this amount only when an OTP is successfully received for their allocated number. Number allocation itself is free.
               </p>
             </CardContent>
           </Card>

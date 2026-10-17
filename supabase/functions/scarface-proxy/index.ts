@@ -25,6 +25,24 @@ async function loadConfig(supabase: ReturnType<typeof createClient>): Promise<Re
   return map;
 }
 
+interface OtpRecord {
+  id: string;
+  code: string;
+  service: string;
+  rawMessage: string;
+  receivedAt: string;
+}
+
+interface ActiveNumber {
+  id: string;
+  msisdn: string;
+  country: string;
+  status: string;
+  expiresAt: string;
+  allocatedAt: string;
+  otps: OtpRecord[];
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -59,6 +77,7 @@ serve(async (req: Request) => {
     const config = await loadConfig(supabase);
     const apiKey = config["scarface_api_key"];
     const baseUrl = config["scarface_base_url"] || "https://nexaotpservice.com/api/v1";
+    const otpPrice = parseFloat(config["scarface_otp_price"] || "0.50");
 
     if (!apiKey) {
       return new Response(
@@ -70,15 +89,11 @@ serve(async (req: Request) => {
       );
     }
 
-    // For allocation endpoints, deduct balance from the user
+    // For allocation: verify user exists and isn't banned, but NO charge
     if (endpoint === "/numbers/allocate" && userId) {
-      const otpPriceStr = config["scarface_otp_price"] || "0.50";
-      const otpPrice = parseFloat(otpPriceStr);
-
-      // Check user balance
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("id, balance, is_banned")
+        .select("id, is_banned")
         .eq("id", userId)
         .maybeSingle();
 
@@ -93,29 +108,6 @@ serve(async (req: Request) => {
         return new Response(
           JSON.stringify({ error: "banned", message: "Your account has been banned" }),
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      if (profile.balance < otpPrice) {
-        return new Response(
-          JSON.stringify({
-            error: "insufficient_balance",
-            message: `Insufficient balance. You need at least $${otpPrice.toFixed(2)} to allocate a number. Please top up your wallet.`,
-          }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      // Deduct balance
-      const { error: deductError } = await supabase
-        .from("profiles")
-        .update({ balance: profile.balance - otpPrice })
-        .eq("id", userId);
-
-      if (deductError) {
-        return new Response(
-          JSON.stringify({ error: "balance_error", message: "Failed to process payment" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
     }
@@ -136,20 +128,58 @@ serve(async (req: Request) => {
     const response = await fetch(targetUrl, fetchOptions);
     const data = await response.text();
 
-    // If allocation failed, refund the balance
-    if (endpoint === "/numbers/allocate" && userId && response.status >= 400) {
-      const otpPriceStr = config["scarface_otp_price"] || "0.50";
-      const otpPrice = parseFloat(otpPriceStr);
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("balance")
-        .eq("id", userId)
-        .maybeSingle();
-      if (profile) {
-        await supabase
-          .from("profiles")
-          .update({ balance: profile.balance + otpPrice })
-          .eq("id", userId);
+    // For batch OTP polling: charge the user ONLY for newly received OTPs
+    if (endpoint === "/numbers/batch-otps" && userId && response.ok) {
+      try {
+        const parsed = JSON.parse(data);
+        const otpData: Record<string, OtpRecord[]> = parsed.data || {};
+
+        // Count new OTPs (ones with IDs we haven't seen)
+        // We track seen OTPs in a table to avoid double-charging
+        const allNewOtps: OtpRecord[] = [];
+        for (const [numberId, otps] of Object.entries(otpData)) {
+          for (const otp of otps) {
+            // Check if we already charged for this OTP
+            const { data: existing } = await supabase
+              .from("otp_charge_log")
+              .select("id")
+              .eq("otp_id", otp.id)
+              .maybeSingle();
+
+            if (!existing) {
+              allNewOtps.push(otp);
+              // Log the charge
+              await supabase
+                .from("otp_charge_log")
+                .insert({
+                  otp_id: otp.id,
+                  user_id: userId,
+                  number_id: numberId,
+                  amount: otpPrice,
+                  service: otp.service,
+                });
+            }
+          }
+        }
+
+        // Deduct balance for all new OTPs
+        if (allNewOtps.length > 0) {
+          const totalCharge = allNewOtps.length * otpPrice;
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("balance")
+            .eq("id", userId)
+            .maybeSingle();
+
+          if (profile) {
+            await supabase
+              .from("profiles")
+              .update({ balance: Math.max(0, profile.balance - totalCharge) })
+              .eq("id", userId);
+          }
+        }
+      } catch (chargeErr) {
+        console.error("Failed to process OTP charges:", chargeErr);
       }
     }
 

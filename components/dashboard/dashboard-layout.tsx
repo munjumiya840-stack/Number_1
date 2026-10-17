@@ -13,6 +13,7 @@ import {
   ArrowLeftRight, User as UserIcon, LogOut, Menu, X,
   Shield, Settings, Users, Radio, Server, Tag, Gift,
   Package, ScrollText, UserCog, Layers, Bell, CheckCircle, Radar,
+  ArrowDownToLine, Banknote,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -25,6 +26,7 @@ const userNav = [
   { href: '/dashboard/my-numbers', label: 'My Numbers', icon: FolderClock },
   { href: '/dashboard/otp-logs', label: 'OTP Logs', icon: FolderClock },
   { href: '/dashboard/wallet', label: 'Wallet', icon: Wallet },
+  { href: '/dashboard/withdraw', label: 'Withdraw', icon: ArrowDownToLine },
   { href: '/dashboard/transactions', label: 'Transactions', icon: ArrowLeftRight },
   { href: '/dashboard/profile', label: 'Profile', icon: UserIcon },
 ];
@@ -36,6 +38,8 @@ const adminNav = [
   { href: '/admin/services', label: 'Services', icon: Phone },
   { href: '/admin/providers', label: 'Providers', icon: Server },
   { href: '/admin/orders', label: 'Orders', icon: Package },
+  { href: '/admin/withdrawals', label: 'Withdrawals', icon: Banknote },
+  { href: '/admin/nexa-ranges', label: 'Nexa Ranges', icon: Radar },
   { href: '/admin/otp-events', label: 'OTP Events', icon: KeyRound },
   { href: '/admin/rewards', label: 'Rewards', icon: Gift },
   { href: '/admin/admins', label: 'Admins', icon: UserCog },
