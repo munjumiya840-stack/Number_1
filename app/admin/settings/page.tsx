@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
-import { Settings, Loader2, Wrench, Activity, Key, Eye, EyeOff, Save, Bot, Lock, ShieldCheck, Webhook } from 'lucide-react';
+import { Settings, Loader2, Wrench, Activity, Key, Eye, EyeOff, Save, Bot, Lock, ShieldCheck, Webhook, Server, DollarSign, Radio } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 
 export default function AdminSettingsPage() {
@@ -32,6 +32,17 @@ export default function AdminSettingsPage() {
   const [resettingPwd, setResettingPwd] = useState(false);
   const [settingWebhook, setSettingWebhook] = useState(false);
 
+  // ScarFace / Nexa provider config
+  const [scarfaceKey, setScarfaceKey] = useState('');
+  const [savedScarfaceKey, setSavedScarfaceKey] = useState('');
+  const [showScarfaceKey, setShowScarfaceKey] = useState(false);
+  const [scarfaceBaseUrl, setScarfaceBaseUrl] = useState('');
+  const [savedScarfaceBaseUrl, setSavedScarfaceBaseUrl] = useState('');
+  const [scarfaceOtpPrice, setScarfaceOtpPrice] = useState('');
+  const [savedScarfaceOtpPrice, setSavedScarfaceOtpPrice] = useState('');
+  const [savingScarface, setSavingScarface] = useState(false);
+  const [scarfaceKeyChanged, setScarfaceKeyChanged] = useState(false);
+
   useEffect(() => {
     (async () => {
       const { data } = await supabase
@@ -52,6 +63,19 @@ export default function AdminSettingsPage() {
         setBotApiKey(keyData.value);
       }
       setKeyLoaded(true);
+
+      // Load ScarFace config
+      const { data: sfKey } = await supabase.from('config').select('value').eq('key', 'scarface_api_key').maybeSingle();
+      if (sfKey?.value) { setSavedScarfaceKey(sfKey.value); setScarfaceKey(sfKey.value); }
+
+      const { data: sfUrl } = await supabase.from('config').select('value').eq('key', 'scarface_base_url').maybeSingle();
+      if (sfUrl?.value) { setSavedScarfaceBaseUrl(sfUrl.value); setScarfaceBaseUrl(sfUrl.value); }
+      else { setSavedScarfaceBaseUrl('https://nexaotpservice.com/api/v1'); setScarfaceBaseUrl('https://nexaotpservice.com/api/v1'); }
+
+      const { data: sfPrice } = await supabase.from('config').select('value').eq('key', 'scarface_otp_price').maybeSingle();
+      if (sfPrice?.value) { setSavedScarfaceOtpPrice(sfPrice.value); setScarfaceOtpPrice(sfPrice.value); }
+      else { setSavedScarfaceOtpPrice('0.50'); setScarfaceOtpPrice('0.50'); }
+
       setLoading(false);
     })();
   }, []);
@@ -108,6 +132,30 @@ export default function AdminSettingsPage() {
   };
 
   const keyChanged = botApiKey !== savedBotKey;
+
+  const handleSaveScarface = async () => {
+    if (!scarfaceKey.trim()) {
+      toast.error('Enter a ScarFace API key');
+      return;
+    }
+    setSavingScarface(true);
+    const updates = [
+      supabase.from('config').upsert({ key: 'scarface_api_key', value: scarfaceKey.trim() }),
+      supabase.from('config').upsert({ key: 'scarface_base_url', value: scarfaceBaseUrl.trim() || 'https://nexaotpservice.com/api/v1' }),
+      supabase.from('config').upsert({ key: 'scarface_otp_price', value: scarfaceOtpPrice.trim() || '0.50' }),
+    ];
+    const results = await Promise.all(updates);
+    setSavingScarface(false);
+    if (results.some(r => r.error)) {
+      toast.error('Failed to save some ScarFace settings');
+    } else {
+      setSavedScarfaceKey(scarfaceKey.trim());
+      setSavedScarfaceBaseUrl(scarfaceBaseUrl.trim() || 'https://nexaotpservice.com/api/v1');
+      setSavedScarfaceOtpPrice(scarfaceOtpPrice.trim() || '0.50');
+      setScarfaceKeyChanged(false);
+      toast.success('ScarFace provider settings saved');
+    }
+  };
 
   const handleSetupWebhook = async () => {
     setSettingWebhook(true);
@@ -245,6 +293,91 @@ export default function AdminSettingsPage() {
                   </Button>
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+          {/* ScarFace / Nexa Provider Config */}
+          <Card className="border-border/50 bg-card/50 lg:col-span-2">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Server className="h-5 w-5 text-primary" />
+                OTP Provider (ScarFace / Nexa)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Configure the backend OTP provider. These settings are used server-side by the Range Numbers feature. Users never see or interact with these keys.
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="sfKey" className="text-sm">API Key</Label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Key className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="sfKey"
+                      type={showScarfaceKey ? 'text' : 'password'}
+                      placeholder="sk_live_..."
+                      value={scarfaceKey}
+                      onChange={(e) => { setScarfaceKey(e.target.value); setScarfaceKeyChanged(true); }}
+                      className="pl-9 pr-10 font-mono"
+                      disabled={savingScarface}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowScarfaceKey(!showScarfaceKey)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showScarfaceKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="sfUrl" className="text-sm">API Base URL</Label>
+                  <Input
+                    id="sfUrl"
+                    placeholder="https://nexaotpservice.com/api/v1"
+                    value={scarfaceBaseUrl}
+                    onChange={(e) => setScarfaceBaseUrl(e.target.value)}
+                    className="font-mono text-sm"
+                    disabled={savingScarface}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="sfPrice" className="text-sm">Price per Number (USD)</Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="sfPrice"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.50"
+                      value={scarfaceOtpPrice}
+                      onChange={(e) => setScarfaceOtpPrice(e.target.value)}
+                      className="pl-9"
+                      disabled={savingScarface}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button onClick={handleSaveScarface} disabled={savingScarface || (!scarfaceKeyChanged && scarfaceBaseUrl === savedScarfaceBaseUrl && scarfaceOtpPrice === savedScarfaceOtpPrice)}>
+                  {savingScarface ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
+                  Save Provider Settings
+                </Button>
+                {savedScarfaceKey ? (
+                  <Badge className="bg-success/10 text-success border-success/20">
+                    <Radio className="mr-1 h-3 w-3" /> Provider configured
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">No key set</Badge>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The price per number is automatically deducted from the user wallet balance when they allocate a number on the Range Numbers page.
+              </p>
             </CardContent>
           </Card>
 
