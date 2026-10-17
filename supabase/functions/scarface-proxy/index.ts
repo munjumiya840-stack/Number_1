@@ -7,7 +7,23 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const SCARFACE_BASE = "https://nexaotpservice.com/api/v1";
+interface ConfigRow {
+  key: string;
+  value: string;
+}
+
+async function loadConfig(supabase: ReturnType<typeof createClient>): Promise<Record<string, string>> {
+  const keys = ["scarface_api_key", "scarface_base_url", "scarface_otp_price"];
+  const { data } = await supabase
+    .from("config")
+    .select("key, value")
+    .in("key", keys);
+  const map: Record<string, string> = {};
+  for (const row of (data || []) as ConfigRow[]) {
+    map[row.key] = row.value;
+  }
+  return map;
+}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -16,39 +32,7 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { apiKey: clientKey, endpoint, method, payload } = body;
-
-    // Resolve API key: use client-provided key, or auto-load from config table
-    let apiKey = clientKey;
-
-    if (!apiKey) {
-      const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
-      const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-
-      if (supabaseUrl && supabaseServiceKey) {
-        const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-        });
-        const { data: configRow } = await supabase
-          .from("config")
-          .select("value")
-          .eq("key", "scarface_api_key")
-          .maybeSingle();
-        if (configRow?.value) {
-          apiKey = configRow.value;
-        }
-      }
-    }
-
-    if (!apiKey) {
-      return new Response(
-        JSON.stringify({
-          error: "missing_api_key",
-          message: "ScarFace API key not configured. Add it in the Range Numbers page or set scarface_api_key in config.",
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    const { endpoint, method, payload, userId } = body;
 
     if (!endpoint) {
       return new Response(
@@ -57,7 +41,86 @@ serve(async (req: Request) => {
       );
     }
 
-    const targetUrl = `${SCARFACE_BASE}${endpoint}`;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ error: "server_error", message: "Server is not properly configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    // Always load the API key from the database — never trust client-sent keys
+    const config = await loadConfig(supabase);
+    const apiKey = config["scarface_api_key"];
+    const baseUrl = config["scarface_base_url"] || "https://nexaotpservice.com/api/v1";
+
+    if (!apiKey) {
+      return new Response(
+        JSON.stringify({
+          error: "api_key_not_configured",
+          message: "The admin has not configured the OTP provider yet. Please contact support.",
+        }),
+        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // For allocation endpoints, deduct balance from the user
+    if (endpoint === "/numbers/allocate" && userId) {
+      const otpPriceStr = config["scarface_otp_price"] || "0.50";
+      const otpPrice = parseFloat(otpPriceStr);
+
+      // Check user balance
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, balance, is_banned")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (profileError || !profile) {
+        return new Response(
+          JSON.stringify({ error: "user_not_found", message: "Could not verify your account" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (profile.is_banned) {
+        return new Response(
+          JSON.stringify({ error: "banned", message: "Your account has been banned" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (profile.balance < otpPrice) {
+        return new Response(
+          JSON.stringify({
+            error: "insufficient_balance",
+            message: `Insufficient balance. You need at least $${otpPrice.toFixed(2)} to allocate a number. Please top up your wallet.`,
+          }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Deduct balance
+      const { error: deductError } = await supabase
+        .from("profiles")
+        .update({ balance: profile.balance - otpPrice })
+        .eq("id", userId);
+
+      if (deductError) {
+        return new Response(
+          JSON.stringify({ error: "balance_error", message: "Failed to process payment" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    const targetUrl = `${baseUrl}${endpoint}`;
     const fetchOptions: RequestInit = {
       method: method || "GET",
       headers: {
@@ -72,6 +135,23 @@ serve(async (req: Request) => {
 
     const response = await fetch(targetUrl, fetchOptions);
     const data = await response.text();
+
+    // If allocation failed, refund the balance
+    if (endpoint === "/numbers/allocate" && userId && response.status >= 400) {
+      const otpPriceStr = config["scarface_otp_price"] || "0.50";
+      const otpPrice = parseFloat(otpPriceStr);
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("balance")
+        .eq("id", userId)
+        .maybeSingle();
+      if (profile) {
+        await supabase
+          .from("profiles")
+          .update({ balance: profile.balance + otpPrice })
+          .eq("id", userId);
+      }
+    }
 
     return new Response(data, {
       status: response.status,
