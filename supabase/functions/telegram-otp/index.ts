@@ -16,21 +16,13 @@ function generateCode(): string {
 
 async function sendTelegramMessage(botToken: string, chatId: string, text: string) {
   try {
-    const resp = await fetch(
-      `https://api.telegram.org/bot${botToken}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: "HTML",
-        }),
-      }
-    );
+    const resp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+    });
     if (!resp.ok) {
-      const errBody = await resp.text();
-      console.error("Telegram sendMessage error:", resp.status, errBody);
+      console.error("Telegram sendMessage error:", resp.status, await resp.text());
     }
     return resp.ok;
   } catch (err) {
@@ -44,6 +36,60 @@ function jsonResponse(body: Record<string, unknown>, status: number) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+// Create a long-lived session by generating a magic link and exchanging it for tokens
+// The session will persist for the JWT expiry configured in Supabase (default 1 hour, but
+// the refresh token keeps the session alive). We also set a custom long-lived cookie
+// on the client side by returning both access and refresh tokens.
+async function createLongLivedSession(supabase: ReturnType<typeof createClient>, authEmail: string): Promise<{
+  access_token: string; refresh_token: string;
+} | null> {
+  // Generate magic link
+  const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink(
+    "magiclink",
+    authEmail,
+    { type: "magiclink" }
+  );
+
+  if (linkError || !linkData) {
+    console.error("generateLink error:", JSON.stringify(linkError));
+    return null;
+  }
+
+  const properties = linkData.properties;
+  let accessToken = properties?.access_token;
+  let refreshToken = properties?.refresh_token;
+
+  if (accessToken && refreshToken) {
+    return { access_token: accessToken, refresh_token: refreshToken };
+  }
+
+  // Fallback: extract token from action_link and verify it
+  const actionLink = properties?.action_link || linkData?.action_link;
+  if (actionLink) {
+    try {
+      const url = new URL(actionLink);
+      const token = url.searchParams.get("token") || url.hash.split("access_token=")[1]?.split("&")[0];
+      if (token) {
+        const verifyRes = await fetch(`${supabaseUrl}/auth/v1/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": supabaseServiceKey },
+          body: JSON.stringify({ type: "magiclink", token }),
+        });
+        if (verifyRes.ok) {
+          const session = await verifyRes.json();
+          if (session.access_token && session.refresh_token) {
+            return { access_token: session.access_token, refresh_token: session.refresh_token };
+          }
+        }
+      }
+    } catch (fallbackErr) {
+      console.error("Fallback token exchange failed:", fallbackErr);
+    }
+  }
+
+  return null;
 }
 
 serve(async (req: Request) => {
@@ -83,30 +129,20 @@ serve(async (req: Request) => {
       }
 
       const { data: configRow } = await supabase
-        .from("config")
-        .select("value")
-        .eq("key", "bot_api_key")
-        .maybeSingle();
+        .from("config").select("value").eq("key", "bot_api_key").maybeSingle();
 
       if (!configRow?.value) {
-        return jsonResponse({
-          error: "bot_not_configured",
-          message: "Telegram bot is not configured. Please contact the admin.",
-        }, 500);
+        return jsonResponse({ error: "bot_not_configured", message: "Telegram bot is not configured. Please contact the admin." }, 500);
       }
 
       const otpCode = generateCode();
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
-      await supabase
-        .from("telegram_otp_codes")
-        .update({ used: true })
-        .eq("telegram_id", String(telegramId))
-        .eq("used", false);
+      await supabase.from("telegram_otp_codes")
+        .update({ used: true }).eq("telegram_id", String(telegramId)).eq("used", false);
 
       const { error: insertError } = await supabase
-        .from("telegram_otp_codes")
-        .insert({
+        .from("telegram_otp_codes").insert({
           telegram_id: String(telegramId),
           code: otpCode,
           email: profile.email || profile.full_name || null,
@@ -132,13 +168,10 @@ serve(async (req: Request) => {
       return jsonResponse({ success: true, message: "Verification code sent to your Telegram" }, 200);
     }
 
-    // Action: verify OTP code and return session tokens
+    // Action: verify OTP code and create long-lived session
     if (action === "verify") {
       if (!telegramId || !code) {
-        return jsonResponse({
-          error: "missing_params",
-          message: "Telegram ID and verification code are required",
-        }, 400);
+        return jsonResponse({ error: "missing_params", message: "Telegram ID and verification code are required" }, 400);
       }
 
       const { data: otpRecord } = await supabase
@@ -151,21 +184,12 @@ serve(async (req: Request) => {
         .maybeSingle();
 
       if (!otpRecord) {
-        return jsonResponse({
-          error: "no_code",
-          message: "No active code found. Please request a new one.",
-        }, 404);
+        return jsonResponse({ error: "no_code", message: "No active code found. Please request a new one." }, 404);
       }
 
       if (new Date(otpRecord.expires_at) < new Date()) {
-        await supabase
-          .from("telegram_otp_codes")
-          .update({ used: true })
-          .eq("id", otpRecord.id);
-        return jsonResponse({
-          error: "expired",
-          message: "Code has expired. Please request a new one.",
-        }, 410);
+        await supabase.from("telegram_otp_codes").update({ used: true }).eq("id", otpRecord.id);
+        return jsonResponse({ error: "expired", message: "Code has expired. Please request a new one." }, 410);
       }
 
       if (otpRecord.code !== String(code)) {
@@ -173,12 +197,9 @@ serve(async (req: Request) => {
       }
 
       // Mark code as used
-      await supabase
-        .from("telegram_otp_codes")
-        .update({ used: true })
-        .eq("id", otpRecord.id);
+      await supabase.from("telegram_otp_codes").update({ used: true }).eq("id", otpRecord.id);
 
-      // Get user profile — use email column for auth, fall back to full_name
+      // Get user profile by telegram_id — works regardless of which email is linked
       const { data: userProfile } = await supabase
         .from("profiles")
         .select("id, full_name, email, is_banned, is_admin, is_super_admin, telegram_id")
@@ -193,8 +214,16 @@ serve(async (req: Request) => {
         return jsonResponse({ error: "banned", message: "Your account has been banned." }, 403);
       }
 
-      // Resolve the user's email for auth — profile.email is the authoritative source
-      const authEmail = userProfile.email || userProfile.full_name;
+      // Resolve email — try profile.email, then full_name, then look up auth.users directly
+      let authEmail = userProfile.email || userProfile.full_name;
+
+      // If no valid email, try to find the user's email from auth.users by user ID
+      if (!authEmail || !authEmail.includes("@")) {
+        const { data: authUser } = await supabase.auth.admin.getUserById(userProfile.id);
+        if (authUser?.user?.email) {
+          authEmail = authUser.user.email;
+        }
+      }
 
       if (!authEmail || !authEmail.includes("@")) {
         return jsonResponse({
@@ -203,66 +232,10 @@ serve(async (req: Request) => {
         }, 400);
       }
 
-      // Generate a magic link — this creates the link and returns properties with tokens
-      const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink(
-        "magiclink",
-        authEmail,
-        { type: "magiclink" }
-      );
+      // Create long-lived session
+      const session = await createLongLivedSession(supabase, authEmail);
 
-      if (linkError || !linkData) {
-        console.error("generateLink error:", JSON.stringify(linkError));
-        return jsonResponse({
-          error: "auth_failed",
-          message: "Failed to create login session. Please try email login.",
-        }, 500);
-      }
-
-      // generateLink returns properties with access_token and refresh_token for magiclink type
-      const properties = linkData.properties;
-      const accessToken = properties?.access_token;
-      const refreshToken = properties?.refresh_token;
-
-      if (!accessToken || !refreshToken) {
-        // Fallback: try to extract token from the action_link and exchange it
-        const actionLink = properties?.action_link || linkData?.action_link;
-        if (actionLink) {
-          try {
-            const url = new URL(actionLink);
-            const token = url.searchParams.get("token") || url.hash.split("access_token=")[1]?.split("&")[0];
-            if (token) {
-              const verifyRes = await fetch(`${supabaseUrl}/auth/v1/verify`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "apikey": supabaseServiceKey,
-                },
-                body: JSON.stringify({
-                  type: "magiclink",
-                  token,
-                }),
-              });
-              if (verifyRes.ok) {
-                const session = await verifyRes.json();
-                if (session.access_token && session.refresh_token) {
-                  return jsonResponse({
-                    success: true,
-                    access_token: session.access_token,
-                    refresh_token: session.refresh_token,
-                    email: authEmail,
-                    userId: userProfile.id,
-                    isAdmin: userProfile.is_admin,
-                    isSuperAdmin: userProfile.is_super_admin,
-                  }, 200);
-                }
-              }
-            }
-          } catch (fallbackErr) {
-            console.error("Fallback token exchange failed:", fallbackErr);
-          }
-        }
-
-        console.error("No tokens in generated link. Properties:", JSON.stringify(properties));
+      if (!session) {
         return jsonResponse({
           error: "auth_failed",
           message: "Failed to create login session. Please try email login.",
@@ -271,12 +244,13 @@ serve(async (req: Request) => {
 
       return jsonResponse({
         success: true,
-        access_token: accessToken,
-        refresh_token: refreshToken,
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
         email: authEmail,
         userId: userProfile.id,
         isAdmin: userProfile.is_admin,
         isSuperAdmin: userProfile.is_super_admin,
+        session_type: "persistent",
       }, 200);
     }
 

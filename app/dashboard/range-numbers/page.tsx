@@ -116,6 +116,19 @@ export default function RangeNumbersPage() {
     id: number; service_name: string; service_sid: string; range_prefix: string; description: string | null;
   }>>([]);
 
+  // Persistent prefix via localStorage
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('range_prefix') : null;
+    if (saved) setPrefix(saved);
+  }, []);
+
+  const updatePrefix = (val: string) => {
+    setPrefix(val);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('range_prefix', val);
+    }
+  };
+
   const fetchLiveAccess = useCallback(async () => {
     setLiveLoading(true);
     try {
@@ -173,7 +186,7 @@ export default function RangeNumbersPage() {
         user.id
       );
       toast.success(`Number allocated: ${num.msisdn}`);
-      setPrefix('');
+      // Keep prefix persistent — do NOT clear it after allocation
       await fetchActiveNumbers();
       await refreshProfile();
     } catch (err) {
@@ -183,20 +196,21 @@ export default function RangeNumbersPage() {
   };
 
   const pollBatchOtps = useCallback(async () => {
-    if (activeNumbers.length === 0) return;
+    if (!user || activeNumbers.length === 0) return;
     setPolling(true);
     try {
       const res = await proxyCall<{
         data: Record<string, OtpRecord[]>;
         numbers: ActiveNumber[];
-      }>('/numbers/batch-otps', 'POST', {});
+      }>('/numbers/batch-otps', 'POST', {}, user.id);
       const results = res.data || {};
       setPollResults(results);
       const totalCount = Object.values(results).flat().length;
       if (totalCount > prevOtpCount && prevOtpCount >= 0) {
         const newCount = totalCount - prevOtpCount;
         if (newCount > 0) {
-          toast.success(`${newCount} new OTP received!`);
+          toast.success(`${newCount} new OTP received! Balance credited.`);
+          await refreshProfile();
         }
       }
       setPrevOtpCount(totalCount);
@@ -204,7 +218,7 @@ export default function RangeNumbersPage() {
       // silently skip polling errors
     }
     setPolling(false);
-  }, [activeNumbers, prevOtpCount]);
+  }, [user, activeNumbers, prevOtpCount, refreshProfile]);
 
   useEffect(() => {
     if (activeNumbers.length === 0) {
@@ -387,7 +401,7 @@ export default function RangeNumbersPage() {
                             key={r}
                             onClick={() => {
                               const cleanPrefix = r.replace(/X+$/, '');
-                              setPrefix(cleanPrefix);
+                              updatePrefix(cleanPrefix);
                               toast.info(`Prefix set to ${cleanPrefix || 'auto'}`);
                             }}
                             className="rounded-md border border-border/50 bg-card/50 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
@@ -444,11 +458,11 @@ export default function RangeNumbersPage() {
                 <Input
                   placeholder="e.g. 2246"
                   value={prefix}
-                  onChange={(e) => setPrefix(e.target.value)}
+                  onChange={(e) => updatePrefix(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleAllocate()}
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Click a hot range above to auto-fill the prefix
+                  Click a hot range above to auto-fill the prefix. Your prefix is saved automatically.
                 </p>
               </div>
               <Button onClick={handleAllocate} disabled={allocating} className="sm:w-auto">

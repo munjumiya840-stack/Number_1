@@ -58,6 +58,16 @@ export default function AdminWithdrawalsPage() {
   const [binanceId, setBinanceId] = useState('');
   const [savedBinanceId, setSavedBinanceId] = useState('');
 
+  // Payment method image URLs
+  const [bkashImage, setBkashImage] = useState('');
+  const [savedBkashImage, setSavedBkashImage] = useState('');
+  const [nagadImage, setNagadImage] = useState('');
+  const [savedNagadImage, setSavedNagadImage] = useState('');
+  const [rocketImage, setRocketImage] = useState('');
+  const [savedRocketImage, setSavedRocketImage] = useState('');
+  const [binanceImage, setBinanceImage] = useState('');
+  const [savedBinanceImage, setSavedBinanceImage] = useState('');
+
   // Reject dialog
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectNote, setRejectNote] = useState('');
@@ -97,6 +107,8 @@ export default function AdminWithdrawalsPage() {
         'withdrawal_min_amount', 'withdrawal_status',
         'withdrawal_bkash_number', 'withdrawal_nagad_number',
         'withdrawal_rocket_number', 'withdrawal_binance_id',
+        'withdrawal_bkash_image', 'withdrawal_nagad_image',
+        'withdrawal_rocket_image', 'withdrawal_binance_image',
       ];
       const { data } = await supabase.from('config').select('key, value').in('key', keys);
       const cfg: Record<string, string> = {};
@@ -121,6 +133,15 @@ export default function AdminWithdrawalsPage() {
       setBinanceId(cfg['withdrawal_binance_id'] || '');
       setSavedBinanceId(cfg['withdrawal_binance_id'] || '');
 
+      setBkashImage(cfg['withdrawal_bkash_image'] || '');
+      setSavedBkashImage(cfg['withdrawal_bkash_image'] || '');
+      setNagadImage(cfg['withdrawal_nagad_image'] || '');
+      setSavedNagadImage(cfg['withdrawal_nagad_image'] || '');
+      setRocketImage(cfg['withdrawal_rocket_image'] || '');
+      setSavedRocketImage(cfg['withdrawal_rocket_image'] || '');
+      setBinanceImage(cfg['withdrawal_binance_image'] || '');
+      setSavedBinanceImage(cfg['withdrawal_binance_image'] || '');
+
       await fetchRequests();
       setLoading(false);
     })();
@@ -135,6 +156,10 @@ export default function AdminWithdrawalsPage() {
       supabase.from('config').upsert({ key: 'withdrawal_nagad_number', value: nagadNumber }),
       supabase.from('config').upsert({ key: 'withdrawal_rocket_number', value: rocketNumber }),
       supabase.from('config').upsert({ key: 'withdrawal_binance_id', value: binanceId }),
+      supabase.from('config').upsert({ key: 'withdrawal_bkash_image', value: bkashImage }),
+      supabase.from('config').upsert({ key: 'withdrawal_nagad_image', value: nagadImage }),
+      supabase.from('config').upsert({ key: 'withdrawal_rocket_image', value: rocketImage }),
+      supabase.from('config').upsert({ key: 'withdrawal_binance_image', value: binanceImage }),
     ];
     const results = await Promise.all(updates);
     setSavingConfig(false);
@@ -148,6 +173,10 @@ export default function AdminWithdrawalsPage() {
       setSavedNagadNumber(nagadNumber);
       setSavedRocketNumber(rocketNumber);
       setSavedBinanceId(binanceId);
+      setSavedBkashImage(bkashImage);
+      setSavedNagadImage(nagadImage);
+      setSavedRocketImage(rocketImage);
+      setSavedBinanceImage(binanceImage);
       toast.success('Withdrawal settings saved');
     }
   };
@@ -226,7 +255,11 @@ export default function AdminWithdrawalsPage() {
     bkashNumber !== savedBkashNumber ||
     nagadNumber !== savedNagadNumber ||
     rocketNumber !== savedRocketNumber ||
-    binanceId !== savedBinanceId;
+    binanceId !== savedBinanceId ||
+    bkashImage !== savedBkashImage ||
+    nagadImage !== savedNagadImage ||
+    rocketImage !== savedRocketImage ||
+    binanceImage !== savedBinanceImage;
 
   if (loading) {
     return (
@@ -336,6 +369,49 @@ export default function AdminWithdrawalsPage() {
                   placeholder="12345678"
                   value={binanceId}
                   onChange={(e) => setBinanceId(e.target.value)}
+                  disabled={savingConfig}
+                  className="text-sm"
+                />
+              </div>
+            </div>
+            {/* Image URL inputs */}
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-pink-600">bKash Logo URL</Label>
+                <Input
+                  placeholder="https://example.com/bkash.png"
+                  value={bkashImage}
+                  onChange={(e) => setBkashImage(e.target.value)}
+                  disabled={savingConfig}
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-orange-600">Nagad Logo URL</Label>
+                <Input
+                  placeholder="https://example.com/nagad.png"
+                  value={nagadImage}
+                  onChange={(e) => setNagadImage(e.target.value)}
+                  disabled={savingConfig}
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-purple-600">Rocket Logo URL</Label>
+                <Input
+                  placeholder="https://example.com/rocket.png"
+                  value={rocketImage}
+                  onChange={(e) => setRocketImage(e.target.value)}
+                  disabled={savingConfig}
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-yellow-600">Binance Logo URL</Label>
+                <Input
+                  placeholder="https://example.com/binance.png"
+                  value={binanceImage}
+                  onChange={(e) => setBinanceImage(e.target.value)}
                   disabled={savingConfig}
                   className="text-sm"
                 />

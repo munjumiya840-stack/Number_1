@@ -7,40 +7,28 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-interface ConfigRow {
-  key: string;
-  value: string;
-}
+interface ConfigRow { key: string; value: string; }
 
 async function loadConfig(supabase: ReturnType<typeof createClient>): Promise<Record<string, string>> {
   const keys = ["scarface_api_key", "scarface_base_url", "scarface_otp_price"];
-  const { data } = await supabase
-    .from("config")
-    .select("key, value")
-    .in("key", keys);
+  const { data } = await supabase.from("config").select("key, value").in("key", keys);
   const map: Record<string, string> = {};
-  for (const row of (data || []) as ConfigRow[]) {
-    map[row.key] = row.value;
-  }
+  for (const row of (data || []) as ConfigRow[]) { map[row.key] = row.value; }
   return map;
 }
 
 interface OtpRecord {
-  id: string;
-  code: string;
-  service: string;
-  rawMessage: string;
-  receivedAt: string;
+  id: string; code: string; service: string; rawMessage: string; receivedAt: string;
 }
 
 interface ActiveNumber {
-  id: string;
-  msisdn: string;
-  country: string;
-  status: string;
-  expiresAt: string;
-  allocatedAt: string;
-  otps: OtpRecord[];
+  id: string; msisdn: string; country: string; status: string;
+  expiresAt: string; allocatedAt: string; otps: OtpRecord[];
+}
+
+interface UserNumberRow {
+  id: number; user_id: string; nexa_number_id: string; msisdn: string | null;
+  country: string | null; status: string; prefix: string | null; expires_at: string | null;
 }
 
 serve(async (req: Request) => {
@@ -73,7 +61,6 @@ serve(async (req: Request) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Always load the API key from the database — never trust client-sent keys
     const config = await loadConfig(supabase);
     const apiKey = config["scarface_api_key"];
     const baseUrl = config["scarface_base_url"] || "https://nexaotpservice.com/api/v1";
@@ -81,44 +68,167 @@ serve(async (req: Request) => {
 
     if (!apiKey) {
       return new Response(
-        JSON.stringify({
-          error: "api_key_not_configured",
-          message: "The admin has not configured the OTP provider yet. Please contact support.",
-        }),
+        JSON.stringify({ error: "api_key_not_configured", message: "The admin has not configured the OTP provider yet. Please contact support." }),
         { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // For allocation: verify user exists and isn't banned, but NO charge
-    if (endpoint === "/numbers/allocate" && userId) {
+    // For allocation: verify user, allocate via Nexa, then record ownership
+    if (endpoint === "/numbers/allocate" && method === "POST" && userId) {
       const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("id, is_banned")
-        .eq("id", userId)
-        .maybeSingle();
+        .from("profiles").select("id, is_banned").eq("id", userId).maybeSingle();
 
       if (profileError || !profile) {
-        return new Response(
-          JSON.stringify({ error: "user_not_found", message: "Could not verify your account" }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        return new Response(JSON.stringify({ error: "user_not_found", message: "Could not verify your account" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      if (profile.is_banned) {
+        return new Response(JSON.stringify({ error: "banned", message: "Your account has been banned" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      if (profile.is_banned) {
-        return new Response(
-          JSON.stringify({ error: "banned", message: "Your account has been banned" }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      // Call Nexa API to allocate
+      const targetUrl = `${baseUrl}/numbers/allocate`;
+      const nresp = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
+      const rawData = await nresp.text();
+
+      if (!nresp.ok) {
+        return new Response(rawData, { status: nresp.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
+
+      let allocated: ActiveNumber;
+      try { allocated = JSON.parse(rawData) as ActiveNumber; }
+      catch { return new Response(rawData, { status: nresp.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }); }
+
+      // Record ownership in user_numbers table
+      await supabase.from("user_numbers").insert({
+        user_id: userId,
+        nexa_number_id: allocated.id,
+        msisdn: allocated.msisdn,
+        country: allocated.country,
+        status: "active",
+        prefix: (payload as Record<string, unknown>)?.prefix as string || null,
+        expires_at: allocated.expiresAt || null,
+      });
+
+      return new Response(rawData, { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // For /numbers/active: ONLY return numbers owned by this user
+    if (endpoint === "/numbers/active" && userId) {
+      const { data: userNums } = await supabase
+        .from("user_numbers")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      const rows = (userNums || []) as UserNumberRow[];
+      const result: ActiveNumber[] = rows.map((r) => ({
+        id: r.nexa_number_id,
+        msisdn: r.msisdn || "",
+        country: r.country || "",
+        status: r.status,
+        expiresAt: r.expires_at || new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+        allocatedAt: r.created_at,
+        otps: [],
+      }));
+
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // For /numbers/batch-otps: fetch from Nexa but filter by user's numbers only
+    if (endpoint === "/numbers/batch-otps" && userId) {
+      // Get this user's numbers only
+      const { data: userNums } = await supabase
+        .from("user_numbers")
+        .select("nexa_number_id")
+        .eq("user_id", userId)
+        .eq("status", "active");
+
+      const userNumberIds = ((userNums || []) as { nexa_number_id: string }[]).map(r => r.nexa_number_id);
+
+      if (userNumberIds.length === 0) {
+        return new Response(JSON.stringify({ data: {}, numbers: [] }), {
+          status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Call Nexa batch-otps
+      const targetUrl = `${baseUrl}/numbers/batch-otps`;
+      const nresp = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const rawData = await nresp.text();
+
+      if (!nresp.ok) {
+        return new Response(rawData, { status: nresp.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      let parsed: { data: Record<string, OtpRecord[]>; numbers: ActiveNumber[] };
+      try { parsed = JSON.parse(rawData); } catch {
+        return new Response(JSON.stringify({ data: {}, numbers: [] }), {
+          status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Filter to only this user's numbers
+      const filteredData: Record<string, OtpRecord[]> = {};
+      for (const [numberId, otps] of Object.entries(parsed.data || {})) {
+        if (userNumberIds.includes(numberId)) {
+          filteredData[numberId] = otps;
+        }
+      }
+      const filteredNumbers = (parsed.numbers || []).filter((n) => userNumberIds.includes(n.id));
+
+      // Credit earnings for new OTPs (INSTANT credit on first OTP receipt)
+      for (const [numberId, otps] of Object.entries(filteredData)) {
+        for (const otp of otps) {
+          const { data: existing } = await supabase
+            .from("otp_charge_log")
+            .select("id")
+            .eq("otp_id", otp.id)
+            .maybeSingle();
+
+          if (!existing) {
+            // Log the earnings
+            await supabase.from("otp_charge_log").insert({
+              otp_id: otp.id, user_id: userId, number_id: numberId,
+              amount: otpPrice, service: otp.service, is_earnings: true,
+            });
+
+            // Credit the user's balance immediately
+            const { data: prof } = await supabase
+              .from("profiles").select("balance, total_earnings").eq("id", userId).maybeSingle();
+
+            if (prof) {
+              await supabase.from("profiles").update({
+                balance: (prof.balance || 0) + otpPrice,
+                total_earnings: (prof.total_earnings || 0) + otpPrice,
+              }).eq("id", userId);
+            }
+          }
+        }
+      }
+
+      return new Response(JSON.stringify({ data: filteredData, numbers: filteredNumbers }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // For /liveaccess: proxy directly (read-only, no user filtering needed)
     const targetUrl = `${baseUrl}${endpoint}`;
     const fetchOptions: RequestInit = {
       method: method || "GET",
-      headers: {
-        "X-API-Key": apiKey,
-        "Content-Type": "application/json",
-      },
+      headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
     };
 
     if (method && method !== "GET" && payload) {
@@ -128,73 +238,13 @@ serve(async (req: Request) => {
     const response = await fetch(targetUrl, fetchOptions);
     const data = await response.text();
 
-    // For batch OTP polling: charge the user ONLY for newly received OTPs
-    if (endpoint === "/numbers/batch-otps" && userId && response.ok) {
-      try {
-        const parsed = JSON.parse(data);
-        const otpData: Record<string, OtpRecord[]> = parsed.data || {};
-
-        // Count new OTPs (ones with IDs we haven't seen)
-        // We track seen OTPs in a table to avoid double-charging
-        const allNewOtps: OtpRecord[] = [];
-        for (const [numberId, otps] of Object.entries(otpData)) {
-          for (const otp of otps) {
-            // Check if we already charged for this OTP
-            const { data: existing } = await supabase
-              .from("otp_charge_log")
-              .select("id")
-              .eq("otp_id", otp.id)
-              .maybeSingle();
-
-            if (!existing) {
-              allNewOtps.push(otp);
-              // Log the charge
-              await supabase
-                .from("otp_charge_log")
-                .insert({
-                  otp_id: otp.id,
-                  user_id: userId,
-                  number_id: numberId,
-                  amount: otpPrice,
-                  service: otp.service,
-                });
-            }
-          }
-        }
-
-        // Deduct balance for all new OTPs
-        if (allNewOtps.length > 0) {
-          const totalCharge = allNewOtps.length * otpPrice;
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("balance")
-            .eq("id", userId)
-            .maybeSingle();
-
-          if (profile) {
-            await supabase
-              .from("profiles")
-              .update({ balance: Math.max(0, profile.balance - totalCharge) })
-              .eq("id", userId);
-          }
-        }
-      } catch (chargeErr) {
-        console.error("Failed to process OTP charges:", chargeErr);
-      }
-    }
-
     return new Response(data, {
       status: response.status,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": response.headers.get("Content-Type") || "application/json",
-      },
+      headers: { ...corsHeaders, "Content-Type": response.headers.get("Content-Type") || "application/json" },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ error: "proxy_error", message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "proxy_error", message }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

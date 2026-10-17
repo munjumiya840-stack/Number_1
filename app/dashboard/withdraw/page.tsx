@@ -21,7 +21,7 @@ interface PaymentMethod {
   label: string;
   color: string;
   bg: string;
-  icon: React.ReactNode;
+  fallbackIcon: React.ReactNode;
 }
 
 const paymentMethods: PaymentMethod[] = [
@@ -30,7 +30,7 @@ const paymentMethods: PaymentMethod[] = [
     label: 'bKash',
     color: 'text-pink-600',
     bg: 'bg-pink-500',
-    icon: (
+    fallbackIcon: (
       <svg viewBox="0 0 32 32" className="h-7 w-7" fill="none">
         <rect width="32" height="32" rx="6" fill="#E2136E" />
         <text x="16" y="22" textAnchor="middle" fill="white" fontSize="13" fontWeight="bold" fontFamily="sans-serif">bK</text>
@@ -42,7 +42,7 @@ const paymentMethods: PaymentMethod[] = [
     label: 'Nagad',
     color: 'text-orange-600',
     bg: 'bg-orange-500',
-    icon: (
+    fallbackIcon: (
       <svg viewBox="0 0 32 32" className="h-7 w-7" fill="none">
         <rect width="32" height="32" rx="6" fill="#F48021" />
         <text x="16" y="22" textAnchor="middle" fill="white" fontSize="11" fontWeight="bold" fontFamily="sans-serif">N</text>
@@ -54,7 +54,7 @@ const paymentMethods: PaymentMethod[] = [
     label: 'Rocket',
     color: 'text-purple-600',
     bg: 'bg-purple-600',
-    icon: (
+    fallbackIcon: (
       <svg viewBox="0 0 32 32" className="h-7 w-7" fill="none">
         <rect width="32" height="32" rx="6" fill="#8B2C9B" />
         <text x="16" y="22" textAnchor="middle" fill="white" fontSize="11" fontWeight="bold" fontFamily="sans-serif">R</text>
@@ -66,7 +66,7 @@ const paymentMethods: PaymentMethod[] = [
     label: 'Binance USDT',
     color: 'text-yellow-600',
     bg: 'bg-yellow-500',
-    icon: (
+    fallbackIcon: (
       <svg viewBox="0 0 32 32" className="h-7 w-7" fill="none">
         <rect width="32" height="32" rx="6" fill="#F0B90B" />
         <text x="16" y="22" textAnchor="middle" fill="#1A1A1A" fontSize="11" fontWeight="bold" fontFamily="sans-serif">B</text>
@@ -96,18 +96,23 @@ export default function WithdrawPage() {
   const [withdrawalMin, setWithdrawalMin] = useState(1.0);
   const [withdrawalOpen, setWithdrawalOpen] = useState(true);
   const [paymentAccounts, setPaymentAccounts] = useState<Record<string, string>>({});
+  const [paymentImages, setPaymentImages] = useState<Record<string, string>>({});
 
   const [requests, setRequests] = useState<WithdrawalRequest[]>([]);
 
   useEffect(() => {
     (async () => {
-      const [minRes, statusRes, bkashRes, nagadRes, rocketRes, binanceRes] = await Promise.all([
+      const [minRes, statusRes, bkashRes, nagadRes, rocketRes, binanceRes, bkashImgRes, nagadImgRes, rocketImgRes, binanceImgRes] = await Promise.all([
         supabase.from('config').select('value').eq('key', 'withdrawal_min_amount').maybeSingle(),
         supabase.from('config').select('value').eq('key', 'withdrawal_status').maybeSingle(),
         supabase.from('config').select('value').eq('key', 'withdrawal_bkash_number').maybeSingle(),
         supabase.from('config').select('value').eq('key', 'withdrawal_nagad_number').maybeSingle(),
         supabase.from('config').select('value').eq('key', 'withdrawal_rocket_number').maybeSingle(),
         supabase.from('config').select('value').eq('key', 'withdrawal_binance_id').maybeSingle(),
+        supabase.from('config').select('value').eq('key', 'withdrawal_bkash_image').maybeSingle(),
+        supabase.from('config').select('value').eq('key', 'withdrawal_nagad_image').maybeSingle(),
+        supabase.from('config').select('value').eq('key', 'withdrawal_rocket_image').maybeSingle(),
+        supabase.from('config').select('value').eq('key', 'withdrawal_binance_image').maybeSingle(),
       ]);
 
       if (minRes.data?.value) setWithdrawalMin(parseFloat(minRes.data.value));
@@ -118,6 +123,12 @@ export default function WithdrawPage() {
         nagad: nagadRes.data?.value || '',
         rocket: rocketRes.data?.value || '',
         binance: binanceRes.data?.value || '',
+      });
+      setPaymentImages({
+        bkash: bkashImgRes.data?.value || '',
+        nagad: nagadImgRes.data?.value || '',
+        rocket: rocketImgRes.data?.value || '',
+        binance: binanceImgRes.data?.value || '',
       });
 
       if (user) {
@@ -307,7 +318,18 @@ export default function WithdrawPage() {
                       !withdrawalOpen && 'opacity-50 cursor-not-allowed'
                     )}
                   >
-                    {method.icon}
+                    {paymentImages[method.id] ? (
+                      <img
+                        src={paymentImages[method.id]}
+                        alt={method.label}
+                        className="h-8 w-8 rounded object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      method.fallbackIcon
+                    )}
                     <span className="text-xs font-medium">{method.label}</span>
                   </button>
                 ))}
